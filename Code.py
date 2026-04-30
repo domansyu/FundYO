@@ -1,13 +1,12 @@
 import streamlit as st
 import os
 import sqlite3
-import numpy as np
-from keras.models import load_model
-from PIL import Image, ImageOps
+from PIL import Image
 from datetime import datetime
+from ultralytics import YOLO
 
 # ==============================
-# Streamlit Grundeinstellung (MUSS ganz oben stehen!)
+# Streamlit Grundeinstellung
 # ==============================
 
 st.set_page_config(page_title="Schul-Fundbüro", layout="wide")
@@ -16,8 +15,6 @@ st.set_page_config(page_title="Schul-Fundbüro", layout="wide")
 # Konfiguration
 # ==============================
 
-MODEL_PATH = "keras_Model.h5"
-LABELS_PATH = "labels.txt"
 IMAGE_FOLDER = "images"
 DB_PATH = "fundbuero.db"
 ADMIN_PASSWORD = "admin123"
@@ -47,41 +44,39 @@ def init_db():
 init_db()
 
 # ==============================
-# Modell laden
+# YOLOv8 Modell laden
 # ==============================
 
 @st.cache_resource
 def load_ai_model():
     try:
-        model = load_model(MODEL_PATH, compile=False)
-        class_names = open(LABELS_PATH, "r").readlines()
-        return model, class_names
+        model = YOLO("yolov8n.pt")  # wird automatisch geladen
+        return model
     except Exception as e:
         st.error(f"Fehler beim Laden des Modells: {e}")
-        return None, None
+        return None
 
-model, class_names = load_ai_model()
+model = load_ai_model()
 
 # ==============================
-# KI-Vorhersage
+# KI-Vorhersage mit YOLO
 # ==============================
 
 def predict_image(image):
-    data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+    results = model(image)
+    result = results[0]
 
-    size = (224, 224)
-    image = ImageOps.fit(image, size, Image.Resampling.LANCZOS)
-    image_array = np.asarray(image)
+    if len(result.boxes) == 0:
+        return "Unbekannt", 0.0
 
-    normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1
-    data[0] = normalized_image_array
+    # bestes Objekt nehmen
+    box = result.boxes[0]
 
-    prediction = model.predict(data)
-    index = np.argmax(prediction)
-    class_name = class_names[index].strip()
-    confidence_score = float(prediction[0][index])
+    class_id = int(box.cls[0])
+    confidence = float(box.conf[0])
+    class_name = model.names[class_id]
 
-    return class_name, confidence_score
+    return class_name, confidence
 
 # ==============================
 # Datenbankfunktionen
@@ -134,7 +129,7 @@ def get_total_count():
     return count
 
 # ==============================
-# Streamlit UI
+# UI
 # ==============================
 
 st.title("Digitales Schul-Fundbüro")
@@ -145,7 +140,7 @@ menu = st.sidebar.selectbox(
 )
 
 # ==============================
-# 1. Upload-Seite
+# 1. Upload
 # ==============================
 
 if menu == "Finder (Upload)":
@@ -171,12 +166,12 @@ if menu == "Finder (Upload)":
 
             insert_item(filename, category, confidence_percent)
 
-            st.success("Gegenstand erfolgreich gespeichert!")
+            st.success("Gegenstand gespeichert!")
             st.write(f"**Kategorie:** {category}")
             st.write(f"**Konfidenz:** {confidence_percent}%")
 
 # ==============================
-# 2. Such-Seite
+# 2. Suche
 # ==============================
 
 elif menu == "Verloren & Suchen":
@@ -186,7 +181,7 @@ elif menu == "Verloren & Suchen":
         f"Gesamtzahl gespeicherter Gegenstände: **{get_total_count()}**"
     )
 
-    categories = [name.strip() for name in class_names] if class_names else []
+    categories = list(model.names.values()) if model else []
     selected_category = st.selectbox("Kategorie auswählen", categories)
 
     if selected_category:
@@ -203,13 +198,13 @@ elif menu == "Verloren & Suchen":
             st.info("Keine Gegenstände gefunden.")
 
 # ==============================
-# 3. Admin-Seite
+# 3. Admin
 # ==============================
 
 elif menu == "Admin":
     st.header("Admin-Bereich")
 
-    password = st.text_input("Passwort eingeben", type="password")
+    password = st.text_input("Passwort", type="password")
 
     if password == ADMIN_PASSWORD:
         st.success("Zugriff gewährt")
